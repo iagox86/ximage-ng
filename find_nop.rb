@@ -7,8 +7,11 @@ require 'pp'
 `gcc -m32 -o run ./run.c`
 
 def go(code)
-  if(code.length != 3)
+  if(code.length > 3)
     raise(ValueError)
+  end
+  while(code.length < 3)
+    code = "\x90" + code
   end
 
   File.open("test_code.bin", "wb") do |w|
@@ -72,10 +75,11 @@ end
 
 results = {}
 
-pp go("\xeb\xfe\x90")
-
-0.upto(0xFF) do |i|
-  str = "\x90\x90%c" % i
+puts()
+puts("1-byte values...")
+puts()
+0x0.upto(0xFF) do |i|
+  str = "%c" % i
   result = go(str)
   results[str] = result
 
@@ -90,11 +94,22 @@ pp go("\xeb\xfe\x90")
   end
 end
 
+puts()
+puts("2-byte values...")
+puts()
 0.upto(0xFFFF) do |i|
-  str = "\x90%c%c" % [
+  str = "%c%c" % [
     (i >> 0)  & 0x0000FF,
     (i >> 8)  & 0x0000FF,
   ]
+
+  # Skip over stuff that we've seen before
+  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
+    puts("%s => skipped, because it has a known working prefix" % str.unpack("H*"))
+    next
+  end
+  puts(results[str[0,1]])
+
   result = go(str)
   results[str] = result
 
@@ -115,7 +130,18 @@ end
     (i >> 8)  & 0x0000FF,
     (i >> 16) & 0x0000FF,
   ]
+
+  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
+    puts("%s => skipped, because it has a known working 1-byte prefix" % str.unpack("H*"))
+    next
+  end
+
+  if(results[str[0,2]] && results[str[0,2]][:status] == :good)
+    puts("%s => skipped, because it has a known working 2-byte prefix" % str.unpack("H*"))
+    next
+  end
   result = go(str)
+
   results[str] = result
 
   if(result[:status] == :good)
