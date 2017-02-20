@@ -6,6 +6,21 @@ require 'pp'
 
 `make all`
 
+# Create a list of all the strings we plan to test
+puts("Generating test cases...")
+TESTS = []
+0x00.upto(0xFF) do |i|
+  puts(i)
+  TESTS << ("%c" % i)
+  0x00.upto(0xFF) do |j|
+    TESTS << ("%c%c" % [i, j])
+    0x00.upto(0xFF) do |k|
+      TESTS << ("%c%c%c" % [i, j, k])
+    end
+  end
+end
+puts("Generation complete!")
+
 def go(code)
   if(code.length > 3)
     raise(ValueError)
@@ -99,6 +114,8 @@ puts()
     f.write(YAML::dump(results))
   end
 end
+
+
 
 puts()
 puts("2-byte values...")
