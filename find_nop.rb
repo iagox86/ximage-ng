@@ -1,6 +1,8 @@
 # encoding: ASCII-8BIT
 
 require 'yaml'
+require 'timeout'
+require 'pp'
 
 `gcc -m32 -o run ./run.c`
 
@@ -17,7 +19,17 @@ def go(code)
     :code => code,
   }
 
-  out = `./run < test_code.bin 2>/dev/null`
+  out = ''
+
+  begin
+    Timeout::timeout(1) do
+      out = `./run < test_code.bin 2>/dev/null`
+    end
+  rescue Timeout::Error
+    result[:status] = :timeout
+    return result
+  end
+
   out.force_encoding("ASCII-8BIT")
 
   result[:out] = out
@@ -59,6 +71,44 @@ def go(code)
 end
 
 results = {}
+
+pp go("\xeb\xfe\x90")
+
+0.upto(0xFF) do |i|
+  str = "\x90\x90%c" % i
+  result = go(str)
+  results[str] = result
+
+  if(result[:status] == :good)
+    puts("%s => %s :: %s :: %s" % [str.unpack("H*"), result[:status], result[:changed_registers], result[:disassembled].join(' / ')])
+  else
+    puts("%s => %s" % [str.unpack("H*"), result[:status]])
+  end
+
+  File.open("result", "wb") do |f|
+    f.write(YAML::dump(results))
+  end
+end
+
+0.upto(0xFFFF) do |i|
+  str = "\x90%c%c" % [
+    (i >> 0)  & 0x0000FF,
+    (i >> 8)  & 0x0000FF,
+  ]
+  result = go(str)
+  results[str] = result
+
+  if(result[:status] == :good)
+    puts("%s => %s :: %s :: %s" % [str.unpack("H*"), result[:status], result[:changed_registers], result[:disassembled].join(' / ')])
+  else
+    puts("%s => %s" % [str.unpack("H*"), result[:status]])
+  end
+
+  File.open("result", "wb") do |f|
+    f.write(YAML::dump(results))
+  end
+end
+
 0.upto(0xFFFFFF) do |i|
   str = "%c%c%c" % [
     (i >> 0)  & 0x0000FF,
