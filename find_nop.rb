@@ -4,29 +4,32 @@ require 'yaml'
 require 'timeout'
 require 'pp'
 
-`gcc -m32 -o run ./run.c`
+`make all`
 
 def go(code)
   if(code.length > 3)
     raise(ValueError)
-  end
-  while(code.length < 3)
-    code = "\x90" + code
-  end
-
-  File.open("test_code.bin", "wb") do |w|
-    w.write(code)
   end
 
   result = {
     :code => code,
   }
 
+  while(code.length < 3)
+    code = "\x90" + code
+  end
+
+  filename = "test_code_%d.bin" % Thread.current.object_id
+  File.open(filename, "wb") do |w|
+    w.write(code)
+  end
+
+
   out = ''
 
   begin
     Timeout::timeout(1) do
-      out = `./run < test_code.bin 2>/dev/null`
+      out = `./run < #{filename} 2>/dev/null`
     end
   rescue Timeout::Error
     result[:status] = :timeout
@@ -67,7 +70,10 @@ def go(code)
     end
   end
 
-  # Disassemble it
+  # Disassemble the original code
+  File.open("test_code.bin", "wb") do |w|
+    w.write(result[:code])
+  end
   result[:disassembled] = `ndisasm -b32 test_code.bin | cut -b29-`.strip().split("\n")
 
   return result
@@ -99,16 +105,15 @@ puts("2-byte values...")
 puts()
 0.upto(0xFFFF) do |i|
   str = "%c%c" % [
-    (i >> 0)  & 0x0000FF,
     (i >> 8)  & 0x0000FF,
+    (i >> 0)  & 0x0000FF,
   ]
 
   # Skip over stuff that we've seen before
-  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
-    puts("%s => skipped, because it has a known working prefix" % str.unpack("H*"))
-    next
-  end
-  puts(results[str[0,1]])
+#  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
+#    puts("%s => skipped, because it has a known working prefix" % str.unpack("H*"))
+#    next
+#  end
 
   result = go(str)
   results[str] = result
@@ -126,20 +131,20 @@ end
 
 0.upto(0xFFFFFF) do |i|
   str = "%c%c%c" % [
-    (i >> 0)  & 0x0000FF,
-    (i >> 8)  & 0x0000FF,
     (i >> 16) & 0x0000FF,
+    (i >> 8)  & 0x0000FF,
+    (i >> 0)  & 0x0000FF,
   ]
 
-  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
-    puts("%s => skipped, because it has a known working 1-byte prefix" % str.unpack("H*"))
-    next
-  end
-
-  if(results[str[0,2]] && results[str[0,2]][:status] == :good)
-    puts("%s => skipped, because it has a known working 2-byte prefix" % str.unpack("H*"))
-    next
-  end
+#  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
+#    puts("%s => skipped, because it has a known working 1-byte prefix" % str.unpack("H*"))
+#    next
+#  end
+#
+#  if(results[str[0,2]] && results[str[0,2]][:status] == :good)
+#    puts("%s => skipped, because it has a known working 2-byte prefix" % str.unpack("H*"))
+#    next
+#  end
   result = go(str)
 
   results[str] = result

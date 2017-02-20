@@ -13,8 +13,6 @@ int main(int argc, char *argv[])
   FILE *in;
   int i;
 
-  system("mv load load.old 2>/dev/null");
-  system("nasm load.asm -o load");
   in = fopen("load", "rb");
   fread(buffer, 1, LENGTH, in);
 
