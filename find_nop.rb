@@ -3,14 +3,24 @@
 require 'yaml'
 require 'timeout'
 require 'pp'
+require 'thread'
 
-`make all`
+`make clean all`
+
+# 1 thread => 0m10.706s
+# 2 threads => 0m9.581s
+# 4 threads => 0m8.746s
+# 8 threads => 0m8.707s
+# 16 threads => 0m8.768s
+# 256 threads => 0m8.713s
+THREAD_COUNT = 16
+
+OUTPUT_FILE = "result.m"
 
 # Create a list of all the strings we plan to test
 puts("Generating test cases...")
 TESTS = []
 0x00.upto(0xFF) do |i|
-  puts(i)
   TESTS << ("%c" % i)
   0x00.upto(0xFF) do |j|
     TESTS << ("%c%c" % [i, j])
@@ -21,29 +31,90 @@ TESTS = []
 end
 puts("Generation complete!")
 
+TESTS.shuffle!()
+TEST_MUTEX = Mutex.new()
+
+FLAGS = {
+  0x00 => :cf,
+  0x01 => :Reserved01,
+  0x02 => :pf,
+  0x03 => :Reserved03,
+  0x04 => :af,
+  0x05 => :Reserved05,
+  0x06 => :zf,
+  0x07 => :sf,
+  0x08 => :tf,
+  0x09 => :if,
+  0x0a => :df,
+  0x0b => :of,
+  0x0c => :iopl1,
+  0x0d => :iopl2,
+  0x0e => :nt,
+  0x0f => :Reserved15,
+  0x10 => :rf,
+  0x11 => :vm,
+  0x12 => :ac,
+  0x13 => :vif,
+  0x14 => :vip,
+  0x15 => :id,
+  0x16 => :Reserved16,
+  0x17 => :Reserved17,
+  0x18 => :Reserved18,
+  0x19 => :Reserved19,
+  0x1a => :Reserved1a,
+  0x1b => :Reserved1b,
+  0x1c => :Reserved1c,
+  0x1d => :Reserved1d,
+  0x1e => :Reserved1e,
+  0x1f => :Reserved1f,
+}
+
+begin
+  puts("Loading results file...")
+  File.open(OUTPUT_FILE, 'rb') do |f|
+    RESULTS = Marshal.load(f.read()) || {}
+  end
+  puts("Loaded!")
+rescue Errno::ENOENT
+  puts("Failed to load! Starting over...")
+  RESULTS = {}
+end
+
+def read_registers(str)
+  result = {}
+  result[:edi], result[:esi], result[:ebp], result[:esp], result[:ebx], result[:edx], result[:ecx], result[:eax], str = str.unpack("VVVVVVVVa*")
+
+  return result, str
+end
+
 def go(code)
   if(code.length > 3)
     raise(ValueError)
   end
 
+  filename = "test_code_%d.bin" % Thread.current.object_id
+
   result = {
     :code => code,
   }
+
+  # Disassemble the original code
+  File.open(filename, "wb") do |w|
+    w.write(code)
+  end
+  result[:disassembled] = `ndisasm -b32 #{filename} | cut -b29-`.strip().split("\n")
 
   while(code.length < 3)
     code = "\x90" + code
   end
 
-  filename = "test_code_%d.bin" % Thread.current.object_id
   File.open(filename, "wb") do |w|
     w.write(code)
   end
 
-
   out = ''
-
   begin
-    Timeout::timeout(1) do
+    Timeout::timeout(10) do
       out = `./run < #{filename} 2>/dev/null`
     end
   rescue Timeout::Error
@@ -53,126 +124,129 @@ def go(code)
 
   out.force_encoding("ASCII-8BIT")
 
-  result[:out] = out
 
-  if(out.length == 32)
+  if(out.length < 296)
     result[:status] = :crash
     return result
   end
 
-  if(out.length != 64)
+  if(out.length != 296)
     result[:status] = :weird
     result[:msg] = "The length was %d" % out.length
+    result[:out] = out
     return result
   end
 
+  # Yay, we have the right output! Now, collect some data...
   result[:status] = :good
+
+  set_flags, out = out.unpack("Va*")
+  out_set_flags = set_flags & (~0x00000202)
+
+  unset_flags, out = out.unpack("Va*")
+  out_unset_flags = unset_flags | (~0x00244ed7)
+
+  base1,    out = read_registers(out)
+  after1_1, out = read_registers(out)
+  after1_2, out = read_registers(out)
+
+  base2,    out = read_registers(out)
+  after2_1, out = read_registers(out)
+  after2_2, out = read_registers(out)
+
+  base3,    out = read_registers(out)
+  after3_1, out = read_registers(out)
+  after3_2, out = read_registers(out)
+
   result[:changed_registers] = []
-
-  before_bin = out[0,32]
-  after_bin = out[32,64]
-
-  before = {}
-  after = {}
-
-  before[:edi], before[:esi], before[:ebp], before[:esp], before[:ebx], before[:edx], before[:ecx], before[:eax] = before_bin.unpack("VVVVVVVV")
-  after[:edi],  after[:esi],  after[:ebp],  after[:esp],  after[:ebx],  after[:edx],  after[:ecx],  after[:eax]  = after_bin.unpack("VVVVVVVV")
 
   # List the changed registers
   [:eax, :ebx, :ecx, :edx, :esi, :edi, :esp, :ebp].each do |reg|
-    if(before[reg] != after[reg])
+    if(base1[reg] != after1_1[reg] || base1[reg] != after1_2[reg])
+      result[:changed_registers] << reg
+    elsif(base2[reg] != after2_1[reg] || base2[reg] != after2_2[reg])
+      result[:changed_registers] << reg
+    elsif(base3[reg] != after3_1[reg] || base3[reg] != after3_2[reg])
       result[:changed_registers] << reg
     end
   end
 
-  # Disassemble the original code
-  File.open("test_code.bin", "wb") do |w|
-    w.write(result[:code])
+  result[:set_flags] = []
+  result[:unset_flags] = []
+  0.upto(31) do |i|
+    if((out_set_flags & (1 << i)) != 0)
+      result[:set_flags] << FLAGS[i]
+    end
+    if((out_unset_flags & (1 << i)) == 0)
+      result[:unset_flags] << FLAGS[i]
+    end
   end
-  result[:disassembled] = `ndisasm -b32 test_code.bin | cut -b29-`.strip().split("\n")
 
   return result
 end
 
-results = {}
-
-puts()
-puts("1-byte values...")
-puts()
-0x0.upto(0xFF) do |i|
-  str = "%c" % i
-  result = go(str)
-  results[str] = result
-
-  if(result[:status] == :good)
-    puts("%s => %s :: %s :: %s" % [str.unpack("H*"), result[:status], result[:changed_registers], result[:disassembled].join(' / ')])
-  else
-    puts("%s => %s" % [str.unpack("H*"), result[:status]])
+def do_test()
+  test = nil
+  TEST_MUTEX.synchronize() do
+    test = TESTS.shift()
   end
 
-  File.open("result", "wb") do |f|
-    f.write(YAML::dump(results))
+  if(test.nil?)
+    Thread.exit()
   end
-end
-
-
-
-puts()
-puts("2-byte values...")
-puts()
-0.upto(0xFFFF) do |i|
-  str = "%c%c" % [
-    (i >> 8)  & 0x0000FF,
-    (i >> 0)  & 0x0000FF,
-  ]
-
-  # Skip over stuff that we've seen before
-#  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
-#    puts("%s => skipped, because it has a known working prefix" % str.unpack("H*"))
-#    next
-#  end
-
-  result = go(str)
-  results[str] = result
-
-  if(result[:status] == :good)
-    puts("%s => %s :: %s :: %s" % [str.unpack("H*"), result[:status], result[:changed_registers], result[:disassembled].join(' / ')])
-  else
-    puts("%s => %s" % [str.unpack("H*"), result[:status]])
+  if(!RESULTS[test].nil?)
+    puts("%s => [skipping]" % test.unpack("H*"))
+    return
   end
 
-  File.open("result", "wb") do |f|
-    f.write(YAML::dump(results))
+  result = go(test)
+  TEST_MUTEX.synchronize() do
+    if(result[:status] == :good)
+      set   = result[:set_flags].map()   { |f| "set:%s" % f }
+      unset = result[:unset_flags].map() { |f| "unset:%s" % f }
+
+      puts("%s => %s :: %s :: %s" % [test.unpack("H*"), result[:status], result[:changed_registers] + set + unset, result[:disassembled].join(' / ')])
+    elsif(result[:status] == :timeout)
+      puts("%s => %s :: %s" % [test.unpack("H*"), result[:status], result[:disassembled].join(' / ')])
+    elsif(result[:status] == :weird)
+      puts("%s => %s :: %s :: %s" % [test.unpack("H*"), result[:status], result[:disassembled].join(' / '), result[:out].unpack("H*")])
+    else
+      puts("%s => %s" % [test.unpack("H*"), result[:status]])
+    end
+
+    RESULTS[test] = result
   end
 end
 
-0.upto(0xFFFFFF) do |i|
-  str = "%c%c%c" % [
-    (i >> 16) & 0x0000FF,
-    (i >> 8)  & 0x0000FF,
-    (i >> 0)  & 0x0000FF,
-  ]
-
-#  if(results[str[0,1]] && results[str[0,1]][:status] == :good)
-#    puts("%s => skipped, because it has a known working 1-byte prefix" % str.unpack("H*"))
-#    next
-#  end
-#
-#  if(results[str[0,2]] && results[str[0,2]][:status] == :good)
-#    puts("%s => skipped, because it has a known working 2-byte prefix" % str.unpack("H*"))
-#    next
-#  end
-  result = go(str)
-
-  results[str] = result
-
-  if(result[:status] == :good)
-    puts("%s => %s :: %s :: %s" % [str.unpack("H*"), result[:status], result[:changed_registers], result[:disassembled].join(' / ')])
-  else
-    puts("%s => %s" % [str.unpack("H*"), result[:status]])
+threads = []
+0.upto(THREAD_COUNT) do
+  threads << Thread.new() do
+    loop do
+      do_test()
+    end
   end
+end
 
-  File.open("result", "wb") do |f|
-    f.write(YAML::dump(results))
+Thread.new() do
+  last_length  = RESULTS.length
+  loop do
+    sleep(10*60)
+    TEST_MUTEX.synchronize() do
+      puts("\nSaving... (size increased by %s)\n" % (RESULTS.length - last_length))
+      last_length = RESULTS.length
+      File.open(OUTPUT_FILE, "wb") do |f|
+        f.write(Marshal::dump(RESULTS))
+      end
+      puts("Saved!")
+    end
   end
+end
+
+threads.each() do |t|
+  t.join()
+end
+
+puts("All done! Writing output file!")
+File.open(OUTPUT_FILE, "wb") do |f|
+  f.write(Marshal::dump(RESULTS))
 end
