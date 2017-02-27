@@ -248,19 +248,57 @@ Thread.new() do
   end
 end
 
+STATUS_TIME = 10
 Thread.new() do
+  last_results_length = RESULTS.length
   loop do
-    sleep(10)
+    sleep(STATUS_TIME)
+
+    puts()
+    puts("********************************************************************************")
+    puts("* STATUS UPDATE")
+    puts("********************************************************************************")
+    puts()
+
     results_length = RESULTS.length
     tests_length = TESTS.length
     total_length = results_length + tests_length
-    puts("\nStatus: %d (%f%%) tests done, %d (%f%%) tests remaining\n" % [
+
+    progress = results_length - last_results_length
+    progress_per_second = progress.to_f / STATUS_TIME.to_f
+
+    if(progress_per_second == 0)
+      time_required_str = "(infinite)"
+    else
+      time_required_total = tests_length.to_f / progress_per_second.to_f
+
+      mm, ss = time_required_total.divmod(60)
+      hh, mm = mm.divmod(60)
+      dd, hh = hh.divmod(24)
+
+      time_required_str = "%d days, %02d:%02d:%02d" % [
+        dd,
+        hh,
+        mm,
+        ss,
+      ]
+
+    end
+
+    puts("Status: %d (%f%%) tests done, %d (%f%%) tests remaining" % [
       results_length,
       (results_length.to_f / total_length.to_f) * 100,
       tests_length,
       (tests_length.to_f / total_length.to_f) * 100,
     ])
+
+    puts("%d completed in %d seconds, so %f per second" % [progress, STATUS_TIME, progress_per_second])
+    puts("There are %d tests remaining, therefore..." % tests_length)
+    puts("Badly estimated time remaining based on that: %s" % time_required_str)
+
     puts()
+
+    last_results_length = results_length
   end
 end
 
