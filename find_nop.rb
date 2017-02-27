@@ -7,12 +7,15 @@ require 'thread'
 
 `make clean all`
 
-# 1 thread => 0m10.706s
-# 2 threads => 0m9.581s
-# 4 threads => 0m8.746s
-# 8 threads => 0m8.707s
-# 16 threads => 0m8.768s
-# 256 threads => 0m8.713s
+# 1 thread => 127, 107, 205
+# 4 threads => 705, 713, 694
+# 8 threads => 781, 720, 682
+# 16 threads => 775, 790, 752
+# 32 threads => 721, 716, 800
+# 64 threads => 752, 705, 738
+# 128 threads => 734, 681, 589
+# 256 threads => 702, 674, 742
+# 1024 threads => 1097, 838, 820
 THREAD_COUNT = 16
 
 OUTPUT_FILE = "result.m"
@@ -29,9 +32,23 @@ TESTS = []
     end
   end
 end
-puts("Generation complete!")
 
-TESTS.shuffle!()
+begin
+  puts("Loading results file...")
+  File.open(OUTPUT_FILE, 'rb') do |f|
+    RESULTS = Marshal.load(f.read()) || {}
+  end
+  puts("Loaded!")
+rescue Errno::ENOENT
+  puts("Failed to load! Starting over...")
+  RESULTS = {}
+end
+
+puts("Eliminating completed tests")
+TESTS.select!() { |t| RESULTS[t].nil?() }
+
+puts("Ordering tests")
+TESTS.sort!()
 TEST_MUTEX = Mutex.new()
 
 FLAGS = {
@@ -68,17 +85,6 @@ FLAGS = {
   0x1e => :Reserved1e,
   0x1f => :Reserved1f,
 }
-
-begin
-  puts("Loading results file...")
-  File.open(OUTPUT_FILE, 'rb') do |f|
-    RESULTS = Marshal.load(f.read()) || {}
-  end
-  puts("Loaded!")
-rescue Errno::ENOENT
-  puts("Failed to load! Starting over...")
-  RESULTS = {}
-end
 
 def read_registers(str)
   result = {}
@@ -230,15 +236,31 @@ end
 Thread.new() do
   last_length  = RESULTS.length
   loop do
-    sleep(10*60)
+    sleep(600)
     TEST_MUTEX.synchronize() do
-      puts("\nSaving... (size increased by %s)\n" % (RESULTS.length - last_length))
+      puts("\nSaving...\n")
       last_length = RESULTS.length
       File.open(OUTPUT_FILE, "wb") do |f|
         f.write(Marshal::dump(RESULTS))
       end
       puts("Saved!")
     end
+  end
+end
+
+Thread.new() do
+  loop do
+    sleep(10)
+    results_length = RESULTS.length
+    tests_length = TESTS.length
+    total_length = results_length + tests_length
+    puts("\nStatus: %d (%f%%) tests done, %d (%f%%) tests remaining\n" % [
+      results_length,
+      (results_length.to_f / total_length.to_f) * 100,
+      tests_length,
+      (tests_length.to_f / total_length.to_f) * 100,
+    ])
+    puts()
   end
 end
 
