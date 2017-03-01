@@ -14,6 +14,8 @@ int main(int argc, char *argv[])
   int i;
   uint8_t replacement[3];
 
+  alarm(10);
+
   in = fopen("load", "rb");
   fread(buffer, 1, LENGTH, in);
   read(0, replacement, 3);

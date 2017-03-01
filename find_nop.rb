@@ -236,7 +236,7 @@ end
 Thread.new() do
   last_length  = RESULTS.length
   loop do
-    sleep(600)
+    sleep(3600)
     TEST_MUTEX.synchronize() do
       puts("\nSaving...\n")
       last_length = RESULTS.length
