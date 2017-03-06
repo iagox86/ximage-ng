@@ -215,7 +215,7 @@ def do_test()
     elsif(result[:status] == :timeout)
       puts("%s => %s :: %s" % [test.unpack("H*"), result[:status], result[:disassembled].join(' / ')])
     elsif(result[:status] == :weird)
-      puts("%s => %s :: %s :: %s" % [test.unpack("H*"), result[:status], result[:disassembled].join(' / '), result[:out].unpack("H*")])
+      puts("%s => %s :: %s" % [test.unpack("H*"), result[:status], result[:disassembled].join(' / ')])
     else
       puts("%s => %s" % [test.unpack("H*"), result[:status]])
     end
