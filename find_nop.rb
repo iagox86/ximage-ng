@@ -4,6 +4,8 @@ require 'thread'
 require 'timeout'
 require 'trollop'
 
+require './generate_harness.rb'
+
 TEST_MUTEX = Mutex.new()
 
 FLAGS = {
