@@ -1,54 +1,9 @@
 # encoding: ASCII-8BIT
 
-require 'yaml'
-require 'timeout'
-require 'pp'
 require 'thread'
+require 'timeout'
+require 'trollop'
 
-`make clean all`
-
-# 1 thread => 127, 107, 205
-# 4 threads => 705, 713, 694
-# 8 threads => 781, 720, 682
-# 16 threads => 775, 790, 752
-# 32 threads => 721, 716, 800
-# 64 threads => 752, 705, 738
-# 128 threads => 734, 681, 589
-# 256 threads => 702, 674, 742
-# 1024 threads => 1097, 838, 820
-THREAD_COUNT = 16
-
-OUTPUT_FILE = "result.m"
-
-# Create a list of all the strings we plan to test
-puts("Generating test cases...")
-TESTS = []
-0x00.upto(0xFF) do |i|
-  TESTS << ("%c" % i)
-  0x00.upto(0xFF) do |j|
-    TESTS << ("%c%c" % [i, j])
-    0x00.upto(0xFF) do |k|
-      TESTS << ("%c%c%c" % [i, j, k])
-    end
-  end
-end
-
-begin
-  puts("Loading results file...")
-  File.open(OUTPUT_FILE, 'rb') do |f|
-    RESULTS = Marshal.load(f.read()) || {}
-  end
-  puts("Loaded!")
-rescue Errno::ENOENT
-  puts("Failed to load! Starting over...")
-  RESULTS = {}
-end
-
-puts("Eliminating completed tests")
-TESTS.select!() { |t| RESULTS[t].nil?() }
-
-puts("Ordering tests")
-TESTS.sort!()
 TEST_MUTEX = Mutex.new()
 
 FLAGS = {
@@ -86,6 +41,93 @@ FLAGS = {
   0x1f => :Reserved1f,
 }
 
+
+opts = Trollop::options do
+  version("ximage-ng")
+
+  opt :h,       "Gotta use --help if you want help!", :type => :boolean, :default => false
+  opt :threads, "Number of parallel threads (16 works well)", :type => :integer, :default => 16
+  opt :out,     "Output file (used for saving progress, will also load this file if it exists)", :type => :string, :default => "result.m"
+  opt :in,      "Input file (optional; used to generate the testcases. Needs to be in the same format as the output file; designed for chaining, basically, so the output can be re-processed; will perform every test in the file, no matter which status they had)", :type => :string, :default => nil
+  opt :s,       "Save frequency in seconds (default 600, once per minute)", :type => :integer, :default => 600
+  opt :length,  "The maximum length of the test strings (has to be 3 or less right now)", :type => :integer, :default => 3
+  opt :shuffle, "Will shuffle the order of the tests; if turned off, will sort them", :type => :boolean, :default => false
+end
+
+if(opts[:h])
+  puts("Please use --help for help!")
+  exit()
+end
+
+`make clean all`
+
+if(opts[:out] == opts[:in])
+  puts("It's a really bad idea to use the same output and input file!")
+  exit()
+end
+
+def generate_test_cases(opts)
+  if(opts[:in])
+    puts("Opening %s..." % opts[:in])
+    File.open(opts[:in]) do |f|
+      puts("Reading and loading %s..." % opts[:in])
+      input = Marshal.load(f.read())
+      puts("Loaded %d test cases!" % input.length())
+      return input.keys()
+    end
+  else
+    puts("Generating test cases...")
+    tests = []
+    0x00.upto(0xFF) do |i|
+      tests << ("%c" % i)
+
+      if(opts[:length] > 1)
+        0x00.upto(0xFF) do |j|
+          tests << ("%c%c" % [i, j])
+
+          if(opts[:length] > 2)
+            0x00.upto(0xFF) do |k|
+              tests << ("%c%c%c" % [i, j, k])
+            end
+          end
+        end
+      end
+    end
+
+    puts("Generated %d tests!" % tests.length)
+    return tests
+  end
+end
+
+def filter_completed_tests(tests, results)
+  puts("Eliminating completed tests")
+  tests.select!() { |t| results[t].nil?() }
+end
+
+tests = generate_test_cases(opts)
+
+results = {}
+begin
+  puts("Loading results file...")
+  File.open(opts[:out], 'rb') do |f|
+    results = Marshal.load(f.read()) || {}
+  end
+  puts("Loaded!")
+
+  filter_completed_tests!(tests, results)
+rescue Errno::ENOENT
+  puts("Failed to load! Starting over...")
+end
+
+
+if(opts[:shuffle])
+  puts("Shuffling tests")
+  tests.shuffle!()
+else
+  puts("Sorting tests")
+  tests.sort!()
+end
+
 def read_registers(str)
   result = {}
   result[:edi], result[:esi], result[:ebp], result[:esp], result[:ebx], result[:edx], result[:ecx], result[:eax], str = str.unpack("VVVVVVVVa*")
@@ -93,7 +135,7 @@ def read_registers(str)
   return result, str
 end
 
-def go(code)
+def do_single_test(code)
   if(code.length > 3)
     raise(ValueError)
   end
@@ -191,21 +233,17 @@ def go(code)
   return result
 end
 
-def do_test()
+def do_test(tests, results)
   test = nil
   TEST_MUTEX.synchronize() do
-    test = TESTS.shift()
+    test = tests.shift()
   end
 
   if(test.nil?)
     Thread.exit()
   end
-  if(!RESULTS[test].nil?)
-    puts("%s => [skipping]" % test.unpack("H*"))
-    return
-  end
 
-  result = go(test)
+  result = do_single_test(test)
   TEST_MUTEX.synchronize() do
     if(result[:status] == :good)
       set   = result[:set_flags].map()   { |f| "set:%s" % f }
@@ -220,28 +258,28 @@ def do_test()
       puts("%s => %s" % [test.unpack("H*"), result[:status]])
     end
 
-    RESULTS[test] = result
+    results[test] = result
   end
 end
 
 threads = []
-0.upto(THREAD_COUNT) do
+0.upto(opts[:threads]) do
   threads << Thread.new() do
     loop do
-      do_test()
+      do_test(tests, results)
     end
   end
 end
 
 Thread.new() do
-  last_length  = RESULTS.length
+  last_length  = results.length
   loop do
     sleep(3600)
     TEST_MUTEX.synchronize() do
       puts("\nSaving...\n")
-      last_length = RESULTS.length
-      File.open(OUTPUT_FILE, "wb") do |f|
-        f.write(Marshal::dump(RESULTS))
+      last_length = results.length
+      File.open(opts[:out], "wb") do |f|
+        f.write(Marshal::dump(results))
       end
       puts("Saved!")
     end
@@ -250,7 +288,7 @@ end
 
 STATUS_TIME = 10
 Thread.new() do
-  last_results_length = RESULTS.length
+  last_results_length = results.length
   loop do
     sleep(STATUS_TIME)
 
@@ -260,8 +298,8 @@ Thread.new() do
     puts("********************************************************************************")
     puts()
 
-    results_length = RESULTS.length
-    tests_length = TESTS.length
+    results_length = results.length
+    tests_length = tests.length
     total_length = results_length + tests_length
 
     progress = results_length - last_results_length
@@ -307,6 +345,6 @@ threads.each() do |t|
 end
 
 puts("All done! Writing output file!")
-File.open(OUTPUT_FILE, "wb") do |f|
-  f.write(Marshal::dump(RESULTS))
+File.open(opts[:out], "wb") do |f|
+  f.write(Marshal::dump(results))
 end
